@@ -1,6 +1,7 @@
 import os
 
 from conans.client import packager
+from conans.client.conanfile.package import run_package_method
 from conans.client.graph.graph import BINARY_SKIP
 from conans.client.graph.graph_manager import load_deps_info
 from conans.errors import ConanException
@@ -20,7 +21,9 @@ def export_pkg(app, recorder, full_ref, source_folder, build_folder, package_fol
 
     # The graph has to be loaded with build_mode=[ref.name], so that node is not tried
     # to be downloaded from remotes
-    deps_graph = graph_manager.load_graph(ref, None, graph_info=graph_info, build_mode=[ref.name],
+    # passing here the create_reference=ref argument is useful so the recipe is in "develop",
+    # because the "package()" method is in develop=True already
+    deps_graph = graph_manager.load_graph(ref, ref, graph_info=graph_info, build_mode=[ref.name],
                                           check_updates=False, update=False, remotes=remotes,
                                           recorder=recorder, apply_build_requires=False)
     # this is a bit tricky, but works. The root (virtual), has only 1 neighbor,
@@ -59,9 +62,9 @@ def export_pkg(app, recorder, full_ref, source_folder, build_folder, package_fol
             prev = packager.export_pkg(conanfile, package_id, package_folder, dest_package_folder,
                                        hook_manager, conan_file_path, ref)
         else:
-            prev = packager.run_package_method(conanfile, package_id, source_folder, build_folder,
-                                               dest_package_folder, install_folder, hook_manager,
-                                               conan_file_path, ref, local=True)
+            prev = run_package_method(conanfile, package_id, source_folder, build_folder,
+                                      dest_package_folder, install_folder, hook_manager,
+                                      conan_file_path, ref, local=True)
 
     packager.update_package_metadata(prev, layout, package_id, full_ref.revision)
     pref = PackageReference(pref.ref, pref.id, prev)

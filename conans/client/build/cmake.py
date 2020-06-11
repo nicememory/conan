@@ -4,6 +4,7 @@ from itertools import chain
 
 from six import StringIO  # Python 2 and 3 compatible
 
+
 from conans.client import tools
 from conans.client.build import defs_to_string, join_arguments
 from conans.client.build.cmake_flags import CMakeDefinitionsBuilder, \
@@ -15,14 +16,27 @@ from conans.client.output import ConanOutput
 from conans.client.tools.env import environment_append, _environment_add
 from conans.client.tools.oss import cpu_count, args_to_string
 from conans.errors import ConanException
-from conans.model.conan_file import ConanFile
 from conans.model.version import Version
 from conans.util.config_parser import get_bool_from_text
 from conans.util.files import mkdir, get_abs_path, walk, decode_text
 from conans.util.runners import version_runner
 
 
-class CMake(object):
+def CMake(conanfile, *args, **kwargs):
+    from conans import ConanFile
+    if not isinstance(conanfile, ConanFile):
+        raise ConanException("First argument of CMake() has to be ConanFile. Use CMake(self)")
+
+    # If there is a toolchain, then use the toolchain helper one
+    toolchain = getattr(conanfile, "toolchain", None)
+    if toolchain:
+        from conans.client.build.cmake_toolchain_build_helper import CMakeToolchainBuildHelper
+        return CMakeToolchainBuildHelper(conanfile, *args, **kwargs)
+    else:
+        return CMakeBuildHelper(conanfile, *args, **kwargs)
+
+
+class CMakeBuildHelper(object):
 
     def __init__(self, conanfile, generator=None, cmake_system_name=True,
                  parallel=True, build_type=None, toolset=None, make_program=None,
@@ -44,9 +58,6 @@ class CMake(object):
         :param cmake_program: Path to the custom cmake executable
         :param generator_platform: Generator platform name or none to autodetect (-A cmake option)
         """
-        if not isinstance(conanfile, ConanFile):
-            raise ConanException("First argument of CMake() has to be ConanFile. Use CMake(self)")
-
         self._append_vcvars = append_vcvars
         self._conanfile = conanfile
         self._settings = conanfile.settings
@@ -54,7 +65,7 @@ class CMake(object):
         self._cmake_program = os.getenv("CONAN_CMAKE_PROGRAM") or cmake_program or "cmake"
 
         self.generator_platform = generator_platform
-        self.generator = generator or get_generator(conanfile.settings)
+        self.generator = generator or get_generator(conanfile)
 
         if not self.generator:
             self._conanfile.output.warn("CMake generator could not be deduced from settings")
@@ -73,7 +84,7 @@ class CMake(object):
         self.definitions = builder.get_definitions()
         self.definitions["CONAN_EXPORTED"] = "1"
 
-        self.toolset = toolset or get_toolset(self._settings)
+        self.toolset = toolset or get_toolset(self._settings, self.generator)
         self.build_dir = None
         self.msbuild_verbosity = os.getenv("CONAN_MSBUILD_VERBOSITY") or msbuild_verbosity
 
@@ -159,10 +170,10 @@ class CMake(object):
             compiler_version = self._settings.get_safe("compiler.version")
             if Version(compiler_version) < "16" and self._settings.get_safe("os") != "WindowsCE":
                 if self.generator_platform == "x64":
-                    generator += " Win64"
+                    generator += " Win64" if not generator.endswith(" Win64") else ""
                     generator_platform = None
                 elif self.generator_platform == "ARM":
-                    generator += " ARM"
+                    generator += " ARM" if not generator.endswith(" ARM") else ""
                     generator_platform = None
                 elif self.generator_platform == "Win32":
                     generator_platform = None
@@ -215,13 +226,20 @@ class CMake(object):
         the_os = self._settings.get_safe("os")
         is_clangcl = the_os == "Windows" and compiler == "clang"
         is_msvc = compiler == "Visual Studio"
-        if ((is_msvc or is_clangcl) and platform.system() == "Windows" and
-                self.generator in ["Ninja", "NMake Makefiles", "NMake Makefiles JOM"]):
-            vcvars_dict = tools.vcvars_dict(self._settings, force=True, filter_known_paths=False,
-                                            output=self._conanfile.output)
-            with _environment_add(vcvars_dict, post=self._append_vcvars):
-                self._conanfile.run(command)
-        else:
+        is_intel = compiler == "intel"
+        context = tools.no_op()
+
+        if (is_msvc or is_clangcl) and platform.system() == "Windows":
+            if self.generator in ["Ninja", "NMake Makefiles", "NMake Makefiles JOM"]:
+                vcvars_dict = tools.vcvars_dict(self._settings, force=True, filter_known_paths=False,
+                                                output=self._conanfile.output)
+                context = _environment_add(vcvars_dict, post=self._append_vcvars)
+        elif is_intel:
+            if self.generator in ["Ninja", "NMake Makefiles", "NMake Makefiles JOM",
+                                  "Unix Makefiles"]:
+                compilervars_dict = tools.compilervars_dict(self._conanfile, force=True)
+                context = _environment_add(compilervars_dict, post=self._append_vcvars)
+        with context:
             self._conanfile.run(command)
 
     def configure(self, args=None, defs=None, source_dir=None, build_dir=None,
@@ -428,3 +446,6 @@ class CMake(object):
             return Version(version_str)
         except Exception as e:
             raise ConanException("Error retrieving CMake version: '{}'".format(e))
+
+
+CMake.get_version = CMakeBuildHelper.get_version

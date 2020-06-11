@@ -9,6 +9,7 @@ from nose.plugins.attrib import attr
 from conans.client.tools import replace_in_file
 from conans.model.ref import ConanFileReference, PackageReference
 from conans.test.utils.cpp_test_files import cpp_hello_conan_files
+from conans.test.utils.genconanfile import GenConanfile
 from conans.test.utils.tools import TestClient, NO_SETTINGS_PACKAGE_ID
 
 
@@ -63,7 +64,10 @@ message("Compile options: ${tmp}")
         self.assertIn("Library fake_lib not found in package, might be system one", client.out)
         self.assertIn("Libraries to Link: fake_lib", client.out)
         self.assertIn("Version: 0.1", client.out)
-        self.assertIn("Target libs: fake_lib;;shared_link_flag;", client.out)
+        self.assertIn("Target libs: fake_lib;;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>:shared_link_flag>;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,MODULE_LIBRARY>:shared_link_flag>;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:>", client.out)
         self.assertIn("Compile options: a_cxx_flag;a_flag", client.out)
 
     def cmake_lock_target_redefinition_test(self):
@@ -104,6 +108,42 @@ message("Target libs: ${tmp}")
         client.run("create . user/channel -s build_type=Release", assert_error=True)
         self.assertIn("Skipping already existing target: CONAN_LIB::Hello0_helloHello0", client.out)
         self.assertIn("Target libs: CONAN_LIB::Hello0_helloHello0", client.out)
+
+    def cmake_find_dependency_redefinition_test(self):
+        conanfile = textwrap.dedent("""
+            from conans import ConanFile, CMake
+            class Consumer(ConanFile):
+                name = "App"
+                version = "1.0"
+                requires = "PkgC/1.0@user/testing"
+                generators = "cmake_find_package"
+                exports_sources = "CMakeLists.txt"
+                settings = "os", "arch", "compiler"
+
+                def build(self):
+                    cmake = CMake(self)
+                    cmake.configure()
+
+        """)
+
+        cmakelists = textwrap.dedent("""
+            cmake_minimum_required(VERSION 3.0)
+            project(app)
+            find_package(PkgC)
+        """)
+
+        client = TestClient()
+        client.save({"conanfile.py": GenConanfile()})
+        client.run("create . PkgA/1.0@user/testing")
+        client.save({"conanfile.py": GenConanfile().with_require_plain("PkgA/1.0@user/testing")})
+        client.run("create . PkgB/1.0@user/testing")
+        client.save({"conanfile.py": GenConanfile().with_require_plain("PkgB/1.0@user/testing")
+                                                   .with_require_plain("PkgA/1.0@user/testing")})
+        client.run("create . PkgC/1.0@user/testing")
+        client.save({"conanfile.py": conanfile,
+                     "CMakeLists.txt": cmakelists})
+        client.run("create . App/1.0@user/testing")
+        self.assertIn("Dependency PkgA already found", client.out)
 
     def cmake_find_package_test(self):
         """First package without custom find_package"""
@@ -433,9 +473,16 @@ class Conan(ConanFile):
         client.run("build .")
         self.assertIn('Found MYHELLO2: 1.0 (found version "1.0")', client.out)
         self.assertIn('Found MYHELLO: 1.0 (found version "1.0")', client.out)
-        self.assertIn("Target libs (hello2): CONAN_LIB::MYHELLO2_hello;MYHELLO::MYHELLO;;",
+        self.assertIn("Target libs (hello2): "
+                      "CONAN_LIB::MYHELLO2_hello;MYHELLO::MYHELLO;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>:>;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,MODULE_LIBRARY>:>;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:>",
                       client.out)
-        self.assertIn("Target libs (hello): CONAN_LIB::MYHELLO_hello;;;",
+        self.assertIn("Target libs (hello): CONAN_LIB::MYHELLO_hello;;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>:>;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,MODULE_LIBRARY>:>;"
+                      "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:>",
                       client.out)
 
     def cpp_info_config_test(self):

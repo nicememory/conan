@@ -9,10 +9,11 @@ from conans.client.build.compiler_flags import (architecture_flag, build_type_de
                                                 format_library_paths, libcxx_define, libcxx_flag,
                                                 pic_flag, rpath_flags, sysroot_flag,
                                                 format_frameworks, format_framework_paths)
-from conans.client.build.cppstd_flags import cppstd_flag, cppstd_from_settings
+from conans.client.build.cppstd_flags import cppstd_from_settings, \
+    cppstd_flag_new as cppstd_flag
 from conans.client.tools.env import environment_append
 from conans.client.tools.oss import OSInfo, args_to_string, cpu_count, cross_building, \
-    detected_architecture, detected_os, get_gnu_triplet
+    detected_architecture, detected_os, get_gnu_triplet, get_target_os_arch, get_build_os_arch
 from conans.client.tools.win import unix_path
 from conans.errors import ConanException
 from conans.model.build_info import DEFAULT_BIN, DEFAULT_INCLUDE, DEFAULT_LIB, DEFAULT_SHARE
@@ -38,8 +39,7 @@ class AutoToolsBuildEnvironment(object):
         self._deps_cpp_info = conanfile.deps_cpp_info
         self._os = conanfile.settings.get_safe("os")
         self._arch = conanfile.settings.get_safe("arch")
-        self._os_target = conanfile.settings.get_safe("os_target")
-        self._arch_target = conanfile.settings.get_safe("arch_target")
+        self._os_target, self._arch_target = get_target_os_arch(conanfile)
         self._build_type = conanfile.settings.get_safe("build_type")
         self._compiler = conanfile.settings.get_safe("compiler")
         self._compiler_version = conanfile.settings.get_safe("compiler.version")
@@ -60,7 +60,7 @@ class AutoToolsBuildEnvironment(object):
         # Only c++ flags [-stdlib, -library], will go to CXXFLAGS
         self.cxx_flags = self._configure_cxx_flags()
         # cpp standard
-        self.cppstd_flag = cppstd_flag(self._compiler, self._compiler_version, self._cppstd)
+        self.cppstd_flag = cppstd_flag(conanfile.settings)
         # Not -L flags, ["-m64" "-m32"]
         self.link_flags = self._configure_link_flags()  # TEST!
         # Precalculate -fPIC
@@ -80,9 +80,6 @@ class AutoToolsBuildEnvironment(object):
         """Based on google search for build/host triplets, it could need a lot
         and complex verification"""
 
-        arch_detected = detected_architecture() or platform.machine()
-        os_detected = detected_os() or platform.system()
-
         if self._os_target and self._arch_target:
             try:
                 target = get_gnu_triplet(self._os_target, self._arch_target, self._compiler)
@@ -92,13 +89,21 @@ class AutoToolsBuildEnvironment(object):
         else:
             target = None
 
-        if os_detected is None or arch_detected is None or self._arch is None or self._os is None:
+        if hasattr(self._conanfile, 'settings_build'):
+            os_build, arch_build = get_build_os_arch(self._conanfile)
+        else:
+            # FIXME: Why not use 'os_build' and 'arch_build' from conanfile.settings?
+            os_build = detected_os() or platform.system()
+            arch_build = detected_architecture() or platform.machine()
+
+        if os_build is None or arch_build is None or self._arch is None or self._os is None:
             return False, False, target
-        if not cross_building(self._conanfile.settings, os_detected, arch_detected):
+
+        if not cross_building(self._conanfile, os_build, arch_build):
             return False, False, target
 
         try:
-            build = get_gnu_triplet(os_detected, arch_detected, self._compiler)
+            build = get_gnu_triplet(os_build, arch_build, self._compiler)
         except ConanException as exc:
             self._conanfile.output.warn(str(exc))
             build = None
@@ -236,36 +241,38 @@ class AutoToolsBuildEnvironment(object):
         """Not the -L"""
         ret = copy.copy(self._deps_cpp_info.sharedlinkflags)
         ret.extend(self._deps_cpp_info.exelinkflags)
-        ret.extend(format_frameworks(self._deps_cpp_info.frameworks, compiler=self._compiler))
-        ret.extend(format_framework_paths(self._deps_cpp_info.framework_paths, compiler=self._compiler))
-        arch_flag = architecture_flag(compiler=self._compiler, os=self._os, arch=self._arch)
+        ret.extend(format_frameworks(self._deps_cpp_info.frameworks, self._conanfile.settings))
+        ret.extend(format_framework_paths(self._deps_cpp_info.framework_paths, self._conanfile.settings))
+        arch_flag = architecture_flag(self._conanfile.settings)
         if arch_flag:
             ret.append(arch_flag)
 
-        sysf = sysroot_flag(self._deps_cpp_info.sysroot, win_bash=self._win_bash,
-                            subsystem=self.subsystem,
-                            compiler=self._compiler)
+        sysf = sysroot_flag(self._deps_cpp_info.sysroot, self._conanfile.settings,
+                            win_bash=self._win_bash,
+                            subsystem=self.subsystem)
         if sysf:
             ret.append(sysf)
 
         if self._include_rpath_flags:
-            the_os = self._conanfile.settings.get_safe("os_build") or self._os
-            ret.extend(rpath_flags(the_os, self._compiler, self._deps_cpp_info.lib_paths))
+            os_build, _ = get_build_os_arch(self._conanfile)
+            if not hasattr(self._conanfile, 'settings_build'):
+                os_build = os_build or self._os
+            ret.extend(rpath_flags(self._conanfile.settings, os_build, self._deps_cpp_info.lib_paths))
 
         return ret
 
     def _configure_flags(self):
         ret = copy.copy(self._deps_cpp_info.cflags)
-        arch_flag = architecture_flag(compiler=self._compiler, os=self._os, arch=self._arch)
+        arch_flag = architecture_flag(self._conanfile.settings)
         if arch_flag:
             ret.append(arch_flag)
-        btfs = build_type_flags(compiler=self._compiler, build_type=self._build_type,
-                                vs_toolset=self._conanfile.settings.get_safe("compiler.toolset"))
+        btfs = build_type_flags(self._conanfile.settings)
         if btfs:
             ret.extend(btfs)
-        srf = sysroot_flag(self._deps_cpp_info.sysroot, win_bash=self._win_bash,
-                           subsystem=self.subsystem,
-                           compiler=self._compiler)
+        srf = sysroot_flag(self._deps_cpp_info.sysroot,
+                           self._conanfile.settings,
+                           win_bash=self._win_bash,
+                           subsystem=self.subsystem)
         if srf:
             ret.append(srf)
         if self._compiler_runtime:
@@ -275,7 +282,7 @@ class AutoToolsBuildEnvironment(object):
 
     def _configure_cxx_flags(self):
         ret = copy.copy(self._deps_cpp_info.cxxflags)
-        cxxf = libcxx_flag(compiler=self._compiler, libcxx=self._libcxx)
+        cxxf = libcxx_flag(self._conanfile.settings)
         if cxxf:
             ret.append(cxxf)
         return ret
@@ -290,7 +297,7 @@ class AutoToolsBuildEnvironment(object):
             ret.append(btf)
 
         # CXX11 ABI
-        abif = libcxx_define(compiler=self._compiler, libcxx=self._libcxx)
+        abif = libcxx_define(self._conanfile.settings)
         if abif:
             ret.append(abif)
         return ret
@@ -306,18 +313,22 @@ class AutoToolsBuildEnvironment(object):
                         ret.append(arg)
             return ret
 
-        lib_paths = format_library_paths(self.library_paths, win_bash=self._win_bash,
-                                         subsystem=self.subsystem, compiler=self._compiler)
-        include_paths = format_include_paths(self.include_paths, win_bash=self._win_bash,
-                                             subsystem=self.subsystem, compiler=self._compiler)
+        lib_paths = format_library_paths(self.library_paths,
+                                         self._conanfile.settings,
+                                         win_bash=self._win_bash,
+                                         subsystem=self.subsystem)
+        include_paths = format_include_paths(self.include_paths,
+                                             self._conanfile.settings,
+                                             win_bash=self._win_bash,
+                                             subsystem=self.subsystem)
 
         ld_flags = append(self.link_flags, lib_paths)
         cpp_flags = append(include_paths, format_defines(self.defines))
-        libs = format_libraries(self.libs, compiler=self._compiler)
+        libs = format_libraries(self.libs, self._conanfile.settings)
 
         tmp_compilation_flags = copy.copy(self.flags)
         if self.fpic:
-            tmp_compilation_flags.append(pic_flag(self._compiler))
+            tmp_compilation_flags.append(pic_flag(self._conanfile.settings))
 
         cxx_flags = append(tmp_compilation_flags, self.cxx_flags, self.cppstd_flag)
         c_flags = tmp_compilation_flags

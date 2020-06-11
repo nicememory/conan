@@ -30,9 +30,11 @@ class RequirementInfo(object):
         self._indirect = indirect
 
         try:
-            getattr(self, default_package_id_mode)()
+            func_package_id_mode = getattr(self, default_package_id_mode)
         except AttributeError:
             raise ConanException("'%s' is not a known package_id_mode" % default_package_id_mode)
+        else:
+            func_package_id_mode()
 
     def copy(self):
         # Useful for build_id()
@@ -187,6 +189,7 @@ class RequirementsInfo(object):
     def refs(self):
         """ used for updating downstream requirements with this
         """
+        # FIXME: This is a very bad name, it return prefs, not refs
         return list(self._data.keys())
 
     def _get_key(self, item):
@@ -285,9 +288,11 @@ class PythonRequireInfo(object):
         self._revision = None
 
         try:
-            getattr(self, default_package_id_mode)()
+            func_package_id_mode = getattr(self, default_package_id_mode)
         except AttributeError:
             raise ConanException("'%s' is not a known package_id_mode" % default_package_id_mode)
+        else:
+            func_package_id_mode()
 
     @property
     def sha(self):
@@ -596,8 +601,7 @@ class ConanInfo(object):
 
         if (self.full_settings.compiler and
                 self.full_settings.compiler.version):
-            default = cppstd_default(str(self.full_settings.compiler),
-                                     str(self.full_settings.compiler.version))
+            default = cppstd_default(self.full_settings)
 
             if str(self.full_settings.cppstd) == default:
                 self.settings.cppstd = None

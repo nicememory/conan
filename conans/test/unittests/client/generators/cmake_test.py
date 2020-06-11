@@ -5,7 +5,7 @@ import unittest
 import six
 
 from conans.client.build.cmake_flags import CMakeDefinitionsBuilder
-from conans.client.conf import default_settings_yml
+from conans.client.conf import get_default_settings_yml
 from conans.client.generators import CMakeFindPackageGenerator, CMakeFindPackageMultiGenerator
 from conans.client.generators.cmake import CMakeGenerator
 from conans.client.generators.cmake_multi import CMakeMultiGenerator
@@ -47,8 +47,9 @@ class _MockSettings(object):
 
 class CMakeGeneratorTest(unittest.TestCase):
 
-    def _extract_macro(self, name, text):
-        pattern = ".*(macro\(%s\).*?endmacro\(\)).*" % name
+    @staticmethod
+    def _extract_macro(name, text):
+        pattern = r".*(macro\(%s\).*?endmacro\(\)).*" % name
         return re.sub(pattern, r"\1", text, flags=re.DOTALL)
 
     def variables_setup_test(self):
@@ -285,7 +286,7 @@ endmacro()""", macro)
         self.assertIn('set(CONAN_PACKAGE_VERSION 1.1.0)', cmake_lines)
 
     def settings_are_generated_tests(self):
-        settings = Settings.loads(default_settings_yml)
+        settings = Settings.loads(get_default_settings_yml())
         settings.os = "Windows"
         settings.compiler = "Visual Studio"
         settings.compiler.version = "12"
@@ -306,8 +307,8 @@ endmacro()""", macro)
         self.assertIn('set(CONAN_SETTINGS_OS "Windows")', cmake_lines)
 
     def cmake_find_package_multi_definitions_test(self):
-        """ CMAKE_PREFIX_PATH and CMAKE_MODULE_PATH must be present in cmake_find_package_multi definitions
-        """
+        # CMAKE_PREFIX_PATH and CMAKE_MODULE_PATH must be in cmake_find_package_multi definitions
+
         settings_mock = _MockSettings(build_type="Release")
         conanfile = ConanFile(TestBufferConanOutput(), None)
         conanfile.initialize(settings_mock, EnvValues())
@@ -320,7 +321,7 @@ endmacro()""", macro)
         self.assertEqual(install_folder, definitions["CMAKE_MODULE_PATH"])
 
     def apple_frameworks_test(self):
-        settings = Settings.loads(default_settings_yml)
+        settings = Settings.loads(get_default_settings_yml())
         settings.os = "Macos"
         settings.compiler = "apple-clang"
         settings.compiler.version = "9.1"
