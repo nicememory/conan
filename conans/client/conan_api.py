@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from collections import OrderedDict
@@ -20,6 +21,7 @@ from conans.client.cmd.test import install_build_and_test
 from conans.client.cmd.uploader import CmdUpload
 from conans.client.cmd.user import user_set, users_clean, users_list, token_present
 from conans.client.conanfile.package import run_package_method
+from conans.client.conf.required_version import check_required_conan_version
 from conans.client.graph.graph import RECIPE_EDITABLE
 from conans.client.graph.graph_binaries import GraphBinariesAnalyzer
 from conans.client.graph.graph_manager import GraphManager
@@ -63,7 +65,7 @@ from conans.tools import set_global_instances
 from conans.unicode import get_cwd
 from conans.util.conan_v2_mode import CONAN_V2_MODE_ENVVAR
 from conans.util.env_reader import get_env
-from conans.util.files import exception_message_safe, mkdir, save_files
+from conans.util.files import exception_message_safe, mkdir, save_files, load, save
 from conans.util.log import configure_logger
 from conans.util.tracer import log_command, log_exception
 
@@ -233,6 +235,7 @@ class ConanAPIV1(object):
         # Migration system
         migrator = ClientMigrator(self.cache_folder, Version(client_version), self.out)
         migrator.migrate()
+        check_required_conan_version(self.cache_folder, self.out)
         if not get_env(CONAN_V2_MODE_ENVVAR, False):
             # FIXME Remove in Conan 2.0
             sys.path.append(os.path.join(self.cache_folder, "python"))
@@ -598,6 +601,23 @@ class ConanAPIV1(object):
     @api_method
     def config_rm(self, item):
         self.app.config.rm_item(item)
+
+    @api_method
+    def config_install_list(self):
+        if not os.path.isfile(self.app.cache.config_install_file):
+            return []
+        return json.loads(load(self.app.cache.config_install_file))
+
+    @api_method
+    def config_install_remove(self, index):
+        if not os.path.isfile(self.app.cache.config_install_file):
+            raise ConanException("There is no config data. Need to install config first.")
+        configs = json.loads(load(self.app.cache.config_install_file))
+        try:
+            configs.pop(index)
+        except Exception as e:
+            raise ConanException("Config %s can't be removed: %s" % (index, str(e)))
+        save(self.app.cache.config_install_file, json.dumps(configs))
 
     @api_method
     def config_install(self, path_or_url, verify_ssl, config_type=None, args=None,
